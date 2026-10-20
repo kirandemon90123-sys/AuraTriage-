@@ -1,0 +1,10 @@
+{
+  "name": "AuraTriage (SirenSight) - AI Emergency Co-Pilot & ED Dispatcher",
+  "description": "AI-Powered Emergency Co-Pilot with real-time MediaPipe facial droop detection, acoustic airway analysis, and bidirectional pre-arrival hospital ED trauma dispatch.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

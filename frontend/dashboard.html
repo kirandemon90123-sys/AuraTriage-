@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AuraTriage (SirenSight) - Hospital ED Pre-Arrival Command Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes siren-flash {
+      0%, 100% { background-color: rgba(220, 38, 38, 0.95); }
+      50% { background-color: rgba(153, 27, 27, 0.85); }
+    }
+    .siren-active {
+      animation: siren-flash 1s infinite alternate;
+    }
+    @keyframes radar-sweep {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .radar-beam {
+      transform-origin: center;
+      animation: radar-sweep 4s linear infinite;
+    }
+  </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 font-sans min-h-screen flex flex-col selection:bg-red-600 selection:text-white">
+
+  <!-- TOP TRAUMA CENTER HEADER -->
+  <header id="dashboardHeader" class="bg-zinc-900 border-b border-zinc-800 px-6 py-3 transition-colors duration-500 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center space-x-3">
+        <div class="w-4 h-4 rounded-full bg-red-600 animate-pulse"></div>
+        <div>
+          <h1 class="font-black text-lg tracking-wider text-white uppercase flex items-center gap-2">
+            Metro General Hospital <span class="bg-red-950/80 text-red-400 border border-red-700 text-xs px-2 py-0.5 rounded font-mono">TRAUMA RESUSCITATION CENTER</span>
+          </h1>
+          <p class="text-xs text-zinc-400 font-mono">Level-1 Trauma & Emergency Medicine Command Dashboard &bull; SirenSight Telemetry</p>
+        </div>
+      </div>
+
+      <!-- Live Clock & Hub Status -->
+      <div class="flex items-center space-x-6 text-xs font-mono">
+        <div class="flex items-center space-x-2">
+          <span id="edWsDot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+          <span id="edWsStatus" class="text-zinc-300">Connecting Hub...</span>
+        </div>
+        <div class="bg-zinc-800/80 border border-zinc-700 px-3 py-1.5 rounded-md flex items-center gap-3">
+          <span class="text-zinc-400">BAY STATUS:</span>
+          <span id="bayAvailabilityText" class="text-emerald-400 font-bold">BAY 1: STANDBY (READY)</span>
+        </div>
+        <div class="text-right">
+          <div id="liveClock" class="font-black text-white text-sm">--:--:-- UTC</div>
+          <div class="text-[10px] text-zinc-500 uppercase">Live Hospital Time</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ALARM BANNER (CRITICAL ALERT MODE) -->
+  <div id="alarmBanner" class="hidden siren-active px-6 py-3 border-b-2 border-red-400 text-white shadow-2xl">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl animate-bounce">🚨</span>
+        <div>
+          <div class="font-black text-base uppercase tracking-wider flex items-center gap-2">
+            CRITICAL PRE-ARRIVAL TRAUMA ALERT: <span id="alarmConditionName" class="underline decoration-red-300">ACUTE ISCHEMIC STROKE</span>
+          </div>
+          <div class="text-xs text-red-100 font-mono flex items-center gap-3">
+            <span>PATIENT: <strong id="alarmPatientId">PAT-89211</strong></span>
+            <span>&bull;</span>
+            <span id="alarmAutoTriggerBadge" class="bg-red-900 px-1.5 py-0.2 rounded font-bold">AUTO-TRIGGERED VIA MEDIAPIPE</span>
+          </div>
+        </div>
+      </div>
+      <div class="flex items-center gap-4">
+        <div class="bg-black/60 px-4 py-1.5 rounded-lg border border-red-400/40 text-center">
+          <div class="text-[10px] text-red-200 uppercase font-mono font-bold tracking-wider">Inbound Transit ETA</div>
+          <div id="alarmEtaTimer" class="text-2xl font-black font-mono text-amber-300">05:20</div>
+        </div>
+        <button id="silenceAlarmBtn" class="px-3 py-1.5 bg-black/80 hover:bg-black text-xs font-bold rounded border border-red-300 text-red-100 transition">
+          Silence Tone
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN BODY CONTAINER -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
+
+    <!-- 1. STANDBY RADAR SCREEN (VISIBLE WHEN NO ACTIVE EMERGENCY) -->
+    <div id="standbyScreen" class="flex flex-col items-center justify-center py-20 px-4 text-center">
+      <div class="relative w-48 h-48 mb-6 flex items-center justify-center">
+        <!-- Radar Circles -->
+        <div class="absolute inset-0 rounded-full border border-emerald-900/60"></div>
+        <div class="absolute inset-6 rounded-full border border-emerald-800/50"></div>
+        <div class="absolute inset-14 rounded-full border border-emerald-700/40"></div>
+        <!-- Sweep beam -->
+        <div class="absolute inset-0 rounded-full radar-beam overflow-hidden pointer-events-none">
+          <div class="w-1/2 h-1/2 bg-gradient-to-br from-emerald-500/20 to-transparent"></div>
+        </div>
+        <div class="text-3xl text-emerald-400 z-10">📡</div>
+      </div>
+      <h2 class="text-xl font-bold tracking-wide text-zinc-200 uppercase mb-2">Hospital ED Telemetry Receiver Active</h2>
+      <p class="text-sm text-zinc-400 max-w-md mb-6 font-mono">
+        Listening on WebSocket <code class="text-emerald-400 bg-zinc-900 px-1.5 py-0.5 rounded">/ws/hospital</code>. Incoming patient telemetry packets, facial drooping vectors, and acoustic stridor waveforms will trigger automatic trauma bay alerting.
+      </p>
+      <!-- Simulation Stage Test Triggers for ED Monitor -->
+      <div class="bg-zinc-900/90 border border-zinc-800 p-4 rounded-xl max-w-lg w-full">
+        <div class="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3 text-left">
+          Hospital Dashboard Test Simulators:
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="simulateInboundEmergency('STROKE')" class="p-2.5 bg-zinc-800 hover:bg-red-950/50 hover:border-red-500 border border-zinc-700 rounded-lg text-left text-xs font-bold transition">
+            🧠 Simulate Stroke Alert
+          </button>
+          <button onclick="simulateInboundEmergency('ANAPHYLAXIS')" class="p-2.5 bg-zinc-800 hover:bg-amber-950/50 hover:border-amber-500 border border-zinc-700 rounded-lg text-left text-xs font-bold transition">
+            🫁 Simulate Anaphylaxis
+          </button>
+          <button onclick="simulateInboundEmergency('HEMORRHAGE')" class="p-2.5 bg-zinc-800 hover:bg-rose-950/50 hover:border-rose-500 border border-zinc-700 rounded-lg text-left text-xs font-bold transition">
+            🩸 Simulate Hemorrhage
+          </button>
+          <button onclick="simulateInboundEmergency('BURN')" class="p-2.5 bg-zinc-800 hover:bg-orange-950/50 hover:border-orange-500 border border-zinc-700 rounded-lg text-left text-xs font-bold transition">
+            🔥 Simulate Burn / Cyanosis
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. ACTIVE CRITICAL EMERGENCY TELEMETRY GRID (3-COLUMN GRID) -->
+    <div id="activeDossierGrid" class="hidden space-y-6">
+
+      <!-- Patient Header Bar -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center gap-4">
+          <div id="gridEsiPill" class="px-3 py-1 rounded bg-red-600 text-white font-black text-xs font-mono tracking-wider">
+            RED - IMMEDIATE (ESI-1)
+          </div>
+          <div>
+            <h2 id="gridConditionTitle" class="text-xl font-black text-white">Acute Ischemic Stroke (LVO Suspected)</h2>
+            <p class="text-xs text-zinc-400 font-mono">
+              Transit ID: <span id="gridPatientId" class="text-zinc-200 font-bold">PAT-48192</span> &bull; 
+              Dispatched: <span id="gridTimestamp" class="text-zinc-300">Just now</span>
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          <button onclick="resetDossier()" class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-bold rounded-lg border border-zinc-700 transition">
+            Clear Case / Return Standby
+          </button>
+        </div>
+      </div>
+
+      <!-- 3 COLUMNS -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- COLUMN 1: SCENE VISUAL & GEOLOCATION -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-xl flex flex-col">
+          <div class="bg-zinc-800/80 px-4 py-2.5 border-b border-zinc-700/80 flex items-center justify-between">
+            <span class="text-xs font-black uppercase tracking-wider text-zinc-300 flex items-center gap-1.5">
+              <span>📷</span> Scene Visual & Coordinates
+            </span>
+            <span class="text-[10px] bg-red-950/80 text-red-300 border border-red-800 px-1.5 py-0.5 rounded font-mono">LIVE JPEG FRAME</span>
+          </div>
+          <div class="p-4 space-y-4 flex-1 flex flex-col justify-between">
+            <!-- Trauma Snapshot Frame -->
+            <div class="relative aspect-video bg-black rounded-lg overflow-hidden border border-zinc-800 flex items-center justify-center">
+              <img id="snapshotImg" class="w-full h-full object-cover" alt="Trauma Camera Snapshot" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='180' viewBox='0 0 320 180'%3E%3Crect width='320' height='180' fill='%2318181b'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' fill='%2371717a' font-family='monospace' font-size='12'%3EWAITING TELEMETRY FRAME%3C/text%3E%3C/svg%3E">
+              <div class="absolute bottom-2 left-2 bg-black/80 px-2 py-0.5 rounded text-[10px] font-mono text-zinc-300 border border-zinc-700">
+                Res: 320x180 Base64
+              </div>
+            </div>
+
+            <!-- GPS & Location Map Pin Widget -->
+            <div class="bg-zinc-950 p-3 rounded-lg border border-zinc-800 space-y-2">
+              <div class="flex justify-between items-center text-xs font-mono">
+                <span class="text-zinc-400 font-bold flex items-center gap-1">📍 Incident Coordinates:</span>
+                <span id="gridCoords" class="text-emerald-400 font-bold">37.7749° N, 122.4194° W</span>
+              </div>
+              <!-- Mock Mini Radar Map -->
+              <div class="w-full h-24 bg-zinc-900 rounded border border-zinc-800 relative overflow-hidden flex items-center justify-center">
+                <!-- Grid Lines -->
+                <div class="absolute inset-0 bg-[linear-gradient(to_right,#27272a_1px,transparent_1px),linear-gradient(to_bottom,#27272a_1px,transparent_1px)] bg-[size:16px_16px]"></div>
+                <!-- Hospital Marker -->
+                <div class="absolute right-6 top-6 flex items-center gap-1 text-[10px] font-mono font-bold text-blue-400">
+                  <div class="w-2.5 h-2.5 rounded-full bg-blue-500 animate-ping"></div>
+                  <span>METRO ED</span>
+                </div>
+                <!-- Inbound Ambulance Marker -->
+                <div class="absolute left-8 bottom-6 flex items-center gap-1 text-[10px] font-mono font-bold text-red-400">
+                  <div class="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></div>
+                  <span>INBOUND AMBULANCE</span>
+                </div>
+                <div class="text-[10px] font-mono text-zinc-500 z-10 bg-black/60 px-2 py-1 rounded">
+                  Estimated Transit Route: 2.4 miles (Direct Corridor)
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- COLUMN 2: MULTIMODAL BIOMETRICS & AI TELEMETRY -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-xl flex flex-col">
+          <div class="bg-zinc-800/80 px-4 py-2.5 border-b border-zinc-700/80 flex items-center justify-between">
+            <span class="text-xs font-black uppercase tracking-wider text-zinc-300 flex items-center gap-1.5">
+              <span>🧠</span> Multimodal Biometrics
+            </span>
+            <span class="text-[10px] bg-blue-950/80 text-blue-300 border border-blue-800 px-1.5 py-0.5 rounded font-mono">MEDIAPIPE + WEBAUDIO</span>
+          </div>
+
+          <div class="p-4 space-y-4 flex-1">
+            <!-- Facial Asymmetry Index Card -->
+            <div class="bg-zinc-950 p-3.5 rounded-lg border border-zinc-800">
+              <div class="flex justify-between items-center mb-1.5">
+                <span class="text-xs font-bold text-zinc-300">Facial Asymmetry Index:</span>
+                <span id="gridAsymmetryNum" class="text-base font-black font-mono text-red-400">0.48</span>
+              </div>
+              <div class="w-full bg-zinc-800 rounded-full h-3 overflow-hidden flex mb-2">
+                <div id="gridAsymmetryBar" class="bg-red-500 h-full transition-all duration-300" style="width: 48%;"></div>
+              </div>
+              <div class="flex justify-between text-[10px] font-mono text-zinc-500">
+                <span>0.00 (Symmetric)</span>
+                <span class="text-amber-400">&ge;0.35 (Droop Threshold)</span>
+                <span class="text-red-400">&ge;0.42 (Stroke Trigger)</span>
+              </div>
+              <div id="gridAsymmetryInterpretation" class="mt-2 text-xs font-mono font-bold text-red-400 bg-red-950/40 border border-red-900/60 p-2 rounded">
+                CRITICAL ASYMMETRY DETECTED: Left eye-to-mouth vector deficit &gt; 42%
+              </div>
+            </div>
+
+            <!-- Acoustic Airway Scanner Card -->
+            <div class="bg-zinc-950 p-3.5 rounded-lg border border-zinc-800">
+              <div class="flex justify-between items-center mb-1.5">
+                <span class="text-xs font-bold text-zinc-300">Acoustic Airway Classification:</span>
+                <span id="gridAudioDb" class="text-sm font-black font-mono text-zinc-200">68 dB</span>
+              </div>
+              <div id="gridAudioClassBadge" class="text-xs font-mono font-bold text-emerald-400 bg-emerald-950/40 border border-emerald-900/60 p-2 rounded mb-2">
+                Normal Breathing (Laryngeal Stridor Absent)
+              </div>
+              <div class="w-full bg-zinc-800 rounded-full h-2 overflow-hidden flex">
+                <div id="gridAudioBar" class="bg-emerald-500 h-full transition-all duration-300" style="width: 45%;"></div>
+              </div>
+            </div>
+
+            <!-- Bystander Voice Script Card -->
+            <div class="bg-zinc-950 p-3.5 rounded-lg border border-zinc-800">
+              <div class="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                <span>🔊</span> Bystander Voice Script (Active on Scene)
+              </div>
+              <p id="gridVoiceScript" class="text-xs text-zinc-300 italic bg-zinc-900 p-2.5 rounded border border-zinc-800">
+                "Stroke emergency confirmed. Sit the patient upright at forty-five degrees..."
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- COLUMN 3: AUTOMATED ER PREPARATION CHECKLIST & CONFIRMATION -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-xl flex flex-col justify-between">
+          <div>
+            <div class="bg-zinc-800/80 px-4 py-2.5 border-b border-zinc-700/80 flex items-center justify-between">
+              <span class="text-xs font-black uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
+                <span>📋</span> ER Trauma Preparation Checklist
+              </span>
+              <span class="text-[10px] bg-amber-950/80 text-amber-300 border border-amber-800 px-1.5 py-0.5 rounded font-mono">PROTOCOL AUTOMATION</span>
+            </div>
+
+            <div class="p-4 space-y-3">
+              <p class="text-xs text-zinc-400">
+                Verify each prerequisite before ambulance arrival. Completing checklist enables immediate bay staging:
+              </p>
+
+              <!-- Interactive Checkboxes -->
+              <div id="checklistItems" class="space-y-2.5">
+                <!-- Rendered dynamically -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom Action Confirmation -->
+          <div class="p-4 bg-zinc-950 border-t border-zinc-800 space-y-3">
+            <button id="confirmTraumaReadyBtn" onclick="confirmTraumaReady()" class="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-black font-black text-sm rounded-xl uppercase tracking-wider transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50">
+              <span class="text-lg">✔</span>
+              <span id="confirmBtnText">Confirm Trauma Bay Ready</span>
+            </button>
+            <p id="bayConfirmedStatusText" class="text-[11px] text-center text-zinc-500 font-mono">
+              Clicking transmits real-time ready signal to patient's mobile device via WebSocket.
+            </p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </main>
+
+  <!-- JAVASCRIPT COMMAND DASHBOARD ENGINE -->
+  <script>
+    let ws = null;
+    let alarmOsc1 = null;
+    let alarmOsc2 = null;
+    let alarmGain = null;
+    let alarmInterval = null;
+    let audioCtx = null;
+    let activeDossier = null;
+    let etaCountdownTimer = null;
+    let remainingEta = 0;
+
+    const edWsDot = document.getElementById('edWsDot');
+    const edWsStatus = document.getElementById('edWsStatus');
+    const liveClock = document.getElementById('liveClock');
+    const alarmBanner = document.getElementById('alarmBanner');
+    const alarmConditionName = document.getElementById('alarmConditionName');
+    const alarmPatientId = document.getElementById('alarmPatientId');
+    const alarmAutoTriggerBadge = document.getElementById('alarmAutoTriggerBadge');
+    const alarmEtaTimer = document.getElementById('alarmEtaTimer');
+    const silenceAlarmBtn = document.getElementById('silenceAlarmBtn');
+    const dashboardHeader = document.getElementById('dashboardHeader');
+    const standbyScreen = document.getElementById('standbyScreen');
+    const activeDossierGrid = document.getElementById('activeDossierGrid');
+    const gridConditionTitle = document.getElementById('gridConditionTitle');
+    const gridPatientId = document.getElementById('gridPatientId');
+    const gridTimestamp = document.getElementById('gridTimestamp');
+    const gridEsiPill = document.getElementById('gridEsiPill');
+    const snapshotImg = document.getElementById('snapshotImg');
+    const gridCoords = document.getElementById('gridCoords');
+    const gridAsymmetryNum = document.getElementById('gridAsymmetryNum');
+    const gridAsymmetryBar = document.getElementById('gridAsymmetryBar');
+    const gridAsymmetryInterpretation = document.getElementById('gridAsymmetryInterpretation');
+    const gridAudioDb = document.getElementById('gridAudioDb');
+    const gridAudioClassBadge = document.getElementById('gridAudioClassBadge');
+    const gridAudioBar = document.getElementById('gridAudioBar');
+    const gridVoiceScript = document.getElementById('gridVoiceScript');
+    const checklistItems = document.getElementById('checklistItems');
+    const confirmTraumaReadyBtn = document.getElementById('confirmTraumaReadyBtn');
+    const confirmBtnText = document.getElementById('confirmBtnText');
+    const bayConfirmedStatusText = document.getElementById('bayConfirmedStatusText');
+    const bayAvailabilityText = document.getElementById('bayAvailabilityText');
+
+    // 1. Live Clock
+    function updateClock() {
+      const now = new Date();
+      liveClock.textContent = now.toTimeString().split(' ')[0] + ' LOCAL';
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // 2. Dual-Tone WebAudio Alarm Synthesizer
+    function startAlarmChime() {
+      try {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        stopAlarmChime();
+
+        let toneHigh = true;
+        alarmInterval = setInterval(() => {
+          try {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.frequency.setValueAtTime(toneHigh ? 960 : 770, audioCtx.currentTime);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.35);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.36);
+            toneHigh = !toneHigh;
+          } catch (e) {}
+        }, 400);
+      } catch (err) {
+        console.warn('Audio alarm blocked until user interaction:', err);
+      }
+    }
+
+    function stopAlarmChime() {
+      if (alarmInterval) {
+        clearInterval(alarmInterval);
+        alarmInterval = null;
+      }
+    }
+
+    silenceAlarmBtn.addEventListener('click', () => {
+      stopAlarmChime();
+      silenceAlarmBtn.textContent = 'Tone Silenced';
+      silenceAlarmBtn.className = 'px-3 py-1.5 bg-zinc-800 text-xs font-bold rounded border border-zinc-700 text-zinc-400';
+    });
+
+    // 3. WebSocket Setup
+    function initHospitalWebSocket() {
+      const loc = window.location;
+      const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${loc.host}/ws/hospital`;
+
+      try {
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          edWsDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500';
+          edWsStatus.textContent = 'ED Command Hub ACTIVE';
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'emergency_dossier') {
+              handleIncomingEmergency(data);
+            } else if (data.type === 'trauma_ready_confirmed') {
+              markBayAsConfirmed(data);
+            } else if (data.type === 'emergency_cleared') {
+              resetDossier(false);
+            }
+          } catch (e) {
+            console.error('WS parse error:', e);
+          }
+        };
+
+        ws.onclose = () => {
+          edWsDot.className = 'w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse';
+          edWsStatus.textContent = 'Hub Reconnecting...';
+          setTimeout(initHospitalWebSocket, 2500);
+        };
+
+        ws.onerror = () => {
+          edWsDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500';
+          edWsStatus.textContent = 'Hub Offline (Demo Mode)';
+        };
+      } catch (err) {
+        console.warn('WebSocket unavailable:', err);
+      }
+    }
+
+    initHospitalWebSocket();
+
+    // 4. Handle Incoming Emergency Dossier
+    function handleIncomingEmergency(dossier) {
+      activeDossier = dossier;
+
+      // Switch to active screen
+      standbyScreen.classList.add('hidden');
+      activeDossierGrid.classList.remove('hidden');
+      alarmBanner.classList.remove('hidden');
+
+      // Alarm Sound & Visuals
+      startAlarmChime();
+      dashboardHeader.className = 'bg-red-950/80 border-b-2 border-red-600 px-6 py-3 transition-colors duration-500 sticky top-0 z-50';
+
+      // Alarm Banner Details
+      alarmConditionName.textContent = dossier.conditionName || dossier.condition;
+      alarmPatientId.textContent = dossier.patientId;
+      alarmAutoTriggerBadge.textContent = dossier.autoTriggered ? 'AUTO-TRIGGERED (ASYMMETRY >= 0.42)' : 'DISPATCH TRIGGERED';
+      
+      remainingEta = dossier.etaSeconds || 300;
+      alarmEtaTimer.textContent = formatETA(remainingEta);
+
+      if (etaCountdownTimer) clearInterval(etaCountdownTimer);
+      etaCountdownTimer = setInterval(() => {
+        remainingEta = Math.max(0, remainingEta - 1);
+        alarmEtaTimer.textContent = formatETA(remainingEta);
+        if (remainingEta === 0) clearInterval(etaCountdownTimer);
+      }, 1000);
+
+      // Grid Details
+      gridConditionTitle.textContent = dossier.conditionName || dossier.condition;
+      gridPatientId.textContent = dossier.patientId;
+      gridTimestamp.textContent = new Date(dossier.timestamp).toLocaleTimeString();
+      gridEsiPill.textContent = dossier.esiLevel || 'RED - IMMEDIATE (ESI-1)';
+
+      // Snapshot & Coords
+      if (dossier.snapshot) {
+        snapshotImg.src = dossier.snapshot;
+      }
+      gridCoords.textContent = `${dossier.lat}° N, ${dossier.lon}° W`;
+
+      // Multimodal Biometrics
+      const asym = Number(dossier.asymmetry || 0);
+      gridAsymmetryNum.textContent = asym.toFixed(2);
+      gridAsymmetryBar.style.width = `${Math.min(100, Math.round(asym * 100))}%`;
+      if (asym >= 0.42) {
+        gridAsymmetryBar.className = 'bg-red-500 h-full transition-all duration-300';
+        gridAsymmetryInterpretation.textContent = `CRITICAL ASYMMETRY DETECTED: Left eye-to-mouth vector deficit > 42% (${asym.toFixed(2)})`;
+        gridAsymmetryInterpretation.className = 'mt-2 text-xs font-mono font-bold text-red-400 bg-red-950/40 border border-red-900/60 p-2 rounded';
+      } else if (asym >= 0.35) {
+        gridAsymmetryBar.className = 'bg-amber-500 h-full transition-all duration-300';
+        gridAsymmetryInterpretation.textContent = `MODERATE ASYMMETRY DETECTED: (${asym.toFixed(2)}) - Monitoring closely`;
+        gridAsymmetryInterpretation.className = 'mt-2 text-xs font-mono font-bold text-amber-400 bg-amber-950/40 border border-amber-900/60 p-2 rounded';
+      } else {
+        gridAsymmetryBar.className = 'bg-emerald-500 h-full transition-all duration-300';
+        gridAsymmetryInterpretation.textContent = `NORMAL ASYMMETRY: (${asym.toFixed(2)}) within standard deviation`;
+        gridAsymmetryInterpretation.className = 'mt-2 text-xs font-mono font-bold text-emerald-400 bg-emerald-950/40 border border-emerald-900/60 p-2 rounded';
+      }
+
+      // Audio Airway Status
+      const db = Number(dossier.decibels || 32);
+      const audioClass = dossier.audioClass || "Normal Breathing";
+      gridAudioDb.textContent = `${db} dB`;
+      gridAudioClassBadge.textContent = audioClass;
+      gridAudioBar.style.width = `${db}%`;
+      if (audioClass.includes('Stridor') || db >= 72) {
+        gridAudioClassBadge.className = 'text-xs font-mono font-bold text-red-400 bg-red-950/40 border border-red-900/60 p-2 rounded mb-2';
+        gridAudioBar.className = 'bg-red-500 h-full transition-all duration-300';
+      } else if (audioClass.includes('Tachypnea') || db >= 58) {
+        gridAudioClassBadge.className = 'text-xs font-mono font-bold text-amber-400 bg-amber-950/40 border border-amber-900/60 p-2 rounded mb-2';
+        gridAudioBar.className = 'bg-amber-500 h-full transition-all duration-300';
+      } else {
+        gridAudioClassBadge.className = 'text-xs font-mono font-bold text-emerald-400 bg-emerald-950/40 border border-emerald-900/60 p-2 rounded mb-2';
+        gridAudioBar.className = 'bg-emerald-500 h-full transition-all duration-300';
+      }
+
+      gridVoiceScript.textContent = `"${dossier.voiceScript || 'Emergency guidance in progress.'}"`;
+
+      // Checklist Items
+      const checklist = dossier.edChecklist || [
+        'Trauma Bay 1 Resuscitation Team Staged',
+        'Airway & Rapid Sequence Intubation Kit Verified',
+        'IV Access & Diagnostic Blood Draw Cart Prepared',
+        'Attending Emergency Physician Bedside'
+      ];
+
+      checklistItems.innerHTML = checklist.map((item, idx) => `
+        <label class="flex items-start gap-3 bg-zinc-950 hover:bg-zinc-900/90 p-3 rounded-lg border border-zinc-800 cursor-pointer transition select-none">
+          <input type="checkbox" id="chk_${idx}" onchange="checkAllReady()" class="w-4 h-4 mt-0.5 accent-emerald-500 rounded cursor-pointer">
+          <span class="text-xs font-semibold text-zinc-200 leading-snug">${item}</span>
+        </label>
+      `).join('');
+
+      // Reset Confirm Button state
+      confirmTraumaReadyBtn.disabled = false;
+      confirmTraumaReadyBtn.className = 'w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-black font-black text-sm rounded-xl uppercase tracking-wider transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50';
+      confirmBtnText.textContent = 'Confirm Trauma Bay Ready';
+      bayConfirmedStatusText.textContent = "Clicking transmits real-time ready signal to patient's mobile device via WebSocket.";
+      bayAvailabilityText.textContent = 'BAY 1: INBOUND CODE RED';
+      bayAvailabilityText.className = 'text-red-400 font-bold animate-pulse';
+    }
+
+    // 5. Checklist Verification Helper
+    window.checkAllReady = function() {
+      const inputs = checklistItems.querySelectorAll('input[type="checkbox"]');
+      let allChecked = true;
+      inputs.forEach(input => {
+        if (!input.checked) allChecked = false;
+      });
+      if (allChecked) {
+        confirmTraumaReadyBtn.classList.add('ring-2', 'ring-emerald-400');
+      }
+    };
+
+    // 6. Confirm Trauma Bay Ready Action
+    window.confirmTraumaReady = function() {
+      stopAlarmChime();
+      const patientId = activeDossier ? activeDossier.patientId : "PAT-DEMO";
+
+      const payload = {
+        type: 'confirm_trauma_ready',
+        patientId: patientId,
+        bay: 'Trauma Resuscitation Bay 1',
+        timestamp: new Date().toISOString()
+      };
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(payload));
+      }
+
+      markBayAsConfirmed(payload);
+    };
+
+    function markBayAsConfirmed(payload) {
+      confirmTraumaReadyBtn.className = 'w-full py-3.5 px-4 bg-emerald-700 text-white font-black text-sm rounded-xl uppercase tracking-wider flex items-center justify-center gap-2 cursor-default';
+      confirmBtnText.textContent = '✔ Trauma Bay Confirmed Ready & Transmitted';
+      bayConfirmedStatusText.textContent = "Signal transmitted! Patient's phone is now displaying: METRO GENERAL ED: TRAUMA TEAM PREPARED & STANDING BY";
+      bayConfirmedStatusText.className = 'text-xs text-center text-emerald-400 font-mono font-bold';
+      bayAvailabilityText.textContent = 'BAY 1: READY & PREPPED FOR ARRIVAL';
+      bayAvailabilityText.className = 'text-emerald-400 font-bold';
+    }
+
+    // 7. Reset / Clear Dossier
+    window.resetDossier = function(notifyWs = true) {
+      stopAlarmChime();
+      if (etaCountdownTimer) clearInterval(etaCountdownTimer);
+      activeDossier = null;
+      standbyScreen.classList.remove('hidden');
+      activeDossierGrid.classList.add('hidden');
+      alarmBanner.classList.add('hidden');
+      dashboardHeader.className = 'bg-zinc-900 border-b border-zinc-800 px-6 py-3 transition-colors duration-500 sticky top-0 z-50';
+      bayAvailabilityText.textContent = 'BAY 1: STANDBY (READY)';
+      bayAvailabilityText.className = 'text-emerald-400 font-bold';
+
+      if (notifyWs && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'reset_emergency' }));
+      }
+    }
+
+    // 8. Simulation Trigger Helper for Local Monitor Demos
+    window.simulateInboundEmergency = function(cond) {
+      const protocols = {
+        STROKE: {
+          condition: "STROKE",
+          conditionName: "Acute Ischemic Stroke (LVO Suspected)",
+          esiLevel: "RED - IMMEDIATE (ESI-1)",
+          asymmetry: 0.48,
+          decibels: 48,
+          audioClass: "Normal Breathing",
+          etaSeconds: 320,
+          autoTriggered: true,
+          voiceScript: "Stroke emergency confirmed. Sit the patient upright at forty-five degrees. Do not give any food, water, or aspirin. Keep the patient calm. Emergency dispatch is alerted and hospital trauma team is standing by.",
+          edChecklist: [
+            "Code Stroke Team Paged & Neurointerventionalist on Standby",
+            "CT / CTA Neuro Scanner Cleared & Radiologist Alerted",
+            "IV tPA (Alteplase / Tenecteplase) Weight-Dosed & Reconstituted",
+            "Point-of-Care Blood Glucose & Coagulation Panel Pre-Staged"
+          ]
+        },
+        ANAPHYLAXIS: {
+          condition: "ANAPHYLAXIS",
+          conditionName: "Severe Systemic Anaphylaxis & Airway Compromise",
+          esiLevel: "RED - IMMEDIATE (ESI-1)",
+          asymmetry: 0.08,
+          decibels: 76,
+          audioClass: "Inspiratory Stridor / Wheezing",
+          etaSeconds: 280,
+          autoTriggered: false,
+          voiceScript: "Severe anaphylaxis detected. Administer epinephrine auto-injector immediately into the outer mid-thigh. Keep the patient flat with legs elevated. Airway trauma bay is prepped.",
+          edChecklist: [
+            "Video Laryngoscope & Difficult Airway Cart to Bedside",
+            "IM Epinephrine 1:1,000 (0.3mg) & IV Infusion Pump Primed",
+            "IV Methylprednisolone (125mg) & Diphenhydramine (50mg) Ready",
+            "High-Flow Non-Rebreather Mask / Nebulized Albuterol Operational"
+          ]
+        },
+        HEMORRHAGE: {
+          condition: "HEMORRHAGE",
+          conditionName: "Severe Arterial Hemorrhage / Exsanguinating Trauma",
+          esiLevel: "RED - IMMEDIATE (ESI-1)",
+          asymmetry: 0.04,
+          decibels: 42,
+          audioClass: "Normal Breathing",
+          etaSeconds: 240,
+          autoTriggered: false,
+          voiceScript: "Severe arterial hemorrhage. Apply direct, firm, continuous pressure immediately with clean cloth. If limb bleeding continues, apply tourniquet two inches above wound. Blood bank massive transfusion is pre-activated.",
+          edChecklist: [
+            "Massive Transfusion Protocol (MTP) Activated with Blood Bank",
+            "4 Units Uncrossed O-Negative PRBCs & FFP to Trauma Bay 1",
+            "Belmont Rapid Infuser & Blood Fluid Warmer Primed",
+            "Trauma Surgery Attending & OR-1 Cleared for Damage Control"
+          ]
+        },
+        BURN: {
+          condition: "BURN",
+          conditionName: "Severe Inhalation Thermal Injury / Cyanosis",
+          esiLevel: "RED - IMMEDIATE (ESI-1)",
+          asymmetry: 0.05,
+          decibels: 54,
+          audioClass: "Tachypnea / Hyperventilation",
+          etaSeconds: 350,
+          autoTriggered: false,
+          voiceScript: "Severe burn and airway trauma. Remove patient from heat source. Cool burns with clean room-temperature water. Do not apply ice. Cover loosely with sterile cloth. Trauma team ready.",
+          edChecklist: [
+            "Parkland Formula Resuscitation Calculated (Warm Lactated Ringers Pre-Staged)",
+            "Fiberoptic Bronchoscopy Prepped for Inhalation Airway Assessment",
+            "Sterile Burn Sheets & Forced-Air Bair Hugger Warming Blanket Placed",
+            "Arterial Line Kit & Rapid ABG / Carboxyhemoglobin Cartridges Ready"
+          ]
+        }
+      };
+
+      const proto = protocols[cond] || protocols.STROKE;
+      const simDossier = {
+        type: "emergency_dossier",
+        patientId: "PAT-" + Math.floor(10000 + Math.random() * 90000),
+        timestamp: new Date().toISOString(),
+        condition: proto.condition,
+        conditionName: proto.conditionName,
+        esiLevel: proto.esiLevel,
+        asymmetry: proto.asymmetry,
+        decibels: proto.decibels,
+        audioClass: proto.audioClass,
+        snapshot: "",
+        lat: 37.7749,
+        lon: -122.4194,
+        autoTriggered: proto.autoTriggered,
+        etaSeconds: proto.etaSeconds,
+        bystanderSteps: [],
+        voiceScript: proto.voiceScript,
+        edChecklist: proto.edChecklist,
+      };
+
+      handleIncomingEmergency(simDossier);
+    };
+
+    function formatETA(secs) {
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+  </script>
+</body>
+</html>

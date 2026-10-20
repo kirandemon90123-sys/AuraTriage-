@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AuraTriage (SirenSight) - Patient Emergency Co-Pilot</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- MediaPipe FaceMesh & Camera Utils -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <style>
+    @keyframes pulse-fast {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.02); }
+    }
+    .animate-pulse-fast { animation: pulse-fast 1s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    .scan-line {
+      background: linear-gradient(180deg, rgba(239, 68, 68, 0) 0%, rgba(239, 68, 68, 0.4) 50%, rgba(239, 68, 68, 0) 100%);
+      animation: scan 2s linear infinite;
+    }
+    @keyframes scan {
+      0% { top: 0%; }
+      100% { top: 100%; }
+    }
+  </style>
+</head>
+<body class="bg-black text-white font-sans antialiased min-h-screen flex flex-col justify-between selection:bg-red-500 selection:text-white">
+
+  <!-- TOP HEADER / STATUS HUD -->
+  <header class="bg-zinc-950 border-b border-zinc-800 p-3 sticky top-0 z-50">
+    <div class="max-w-md mx-auto flex items-center justify-between">
+      <div class="flex items-center space-x-2">
+        <div class="w-3 h-3 rounded-full bg-red-600 animate-ping"></div>
+        <div class="w-2.5 h-2.5 rounded-full bg-red-500 -ml-4"></div>
+        <div>
+          <h1 class="font-black text-sm tracking-widest text-zinc-100 flex items-center gap-1.5 uppercase">
+            AuraTriage <span class="bg-red-950/80 text-red-400 text-[10px] px-1.5 py-0.5 rounded border border-red-800 font-mono">CO-PILOT</span>
+          </h1>
+          <p class="text-[10px] text-zinc-400 font-mono flex items-center gap-1">
+            <span id="wsStatusDot" class="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block"></span>
+            <span id="wsStatusText">Connecting ED Hub...</span>
+          </p>
+        </div>
+      </div>
+      <div class="flex items-center space-x-2">
+        <button id="voiceMuteBtn" class="px-2.5 py-1 text-xs font-bold rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 flex items-center gap-1 transition">
+          <span id="voiceMuteIcon">🔊</span>
+          <span id="voiceMuteLabel">Voice ON</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- LIVE TRAUMA BAY READY CONFIRMATION BANNER (HIDDEN UNTIL ED CONFIRMS) -->
+  <div id="hospitalReadyBanner" class="hidden bg-emerald-600 text-black px-4 py-3 border-y-2 border-emerald-300 font-black text-center shadow-lg animate-pulse-fast">
+    <div class="max-w-md mx-auto flex items-center justify-center gap-2 text-sm sm:text-base">
+      <span class="text-xl">🏥</span>
+      <span id="hospitalReadyText">METRO GENERAL ED: TRAUMA TEAM PREPARED & STANDING BY</span>
+    </div>
+  </div>
+
+  <!-- MAIN SCROLLABLE CONTENT -->
+  <main class="flex-1 max-w-md w-full mx-auto p-3 space-y-3 pb-24">
+
+    <!-- CAMERA & FACIAL DROOP HUD -->
+    <section class="bg-zinc-950 border border-zinc-800 rounded-xl overflow-hidden shadow-2xl relative">
+      <div class="relative w-full aspect-[4/3] bg-zinc-900 flex items-center justify-center overflow-hidden">
+        <!-- Live Video Element -->
+        <video id="webcam" class="absolute inset-0 w-full h-full object-cover -scale-x-100" playsinline muted autoplay></video>
+        <!-- Overlay Canvas for Landmark Mesh & Asymmetry Vectors -->
+        <canvas id="meshCanvas" class="absolute inset-0 w-full h-full pointer-events-none -scale-x-100 z-10"></canvas>
+        <!-- Scanning line effect -->
+        <div id="scanLine" class="absolute w-full h-12 pointer-events-none scan-line z-20"></div>
+
+        <!-- Camera Permission / Simulation Placeholder -->
+        <div id="cameraFallbackNotice" class="absolute inset-0 bg-zinc-950/90 flex flex-col items-center justify-center p-4 text-center z-30">
+          <div class="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center text-2xl mb-2">📷</div>
+          <p class="text-sm font-bold text-zinc-200 mb-1">Webcam Initializing...</p>
+          <p class="text-xs text-zinc-400 mb-3 max-w-xs">Allow camera access to enable real-time facial asymmetry & stroke droop analysis.</p>
+          <button id="startCamBtn" class="px-4 py-2 bg-red-600 hover:bg-red-500 font-bold text-xs rounded-lg uppercase tracking-wider text-white transition shadow-lg shadow-red-900/40">
+            Activate Camera & Mic
+          </button>
+        </div>
+
+        <!-- HUD Asymmetry Gauge Badge -->
+        <div class="absolute top-2 left-2 z-20 bg-black/80 backdrop-blur-md px-2.5 py-1.5 rounded-lg border border-zinc-700/80 flex items-center gap-2">
+          <div id="asymmetryLight" class="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
+          <div>
+            <div class="text-[9px] uppercase tracking-wider text-zinc-400 font-mono font-bold">Facial Asymmetry</div>
+            <div id="asymmetryValue" class="text-sm font-black font-mono text-emerald-400">0.08 <span class="text-[10px] text-zinc-400 font-normal">(NORMAL)</span></div>
+          </div>
+        </div>
+
+        <!-- Auto-Trigger Status Badge -->
+        <div class="absolute top-2 right-2 z-20 bg-black/80 backdrop-blur-md px-2 py-1 rounded-md border border-zinc-700 flex items-center gap-1.5">
+          <label class="flex items-center cursor-pointer gap-1.5 text-[10px] font-mono text-zinc-300">
+            <input type="checkbox" id="autoTriggerToggle" checked class="w-3.5 h-3.5 accent-red-600 rounded">
+            <span>Auto-Trigger (&ge;0.42)</span>
+          </label>
+        </div>
+
+        <!-- Landmark Vector Distance Debug pill -->
+        <div class="absolute bottom-2 left-2 z-20 bg-black/70 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-zinc-400 border border-zinc-800">
+          L-Vec: <span id="leftDistVal" class="text-zinc-200">--</span>px | R-Vec: <span id="rightDistVal" class="text-zinc-200">--</span>px
+        </div>
+      </div>
+
+      <!-- ACOUSTIC AIRWAY SCANNER BAR -->
+      <div class="p-2.5 bg-zinc-900/90 border-t border-zinc-800 flex items-center gap-3">
+        <div class="text-lg">🎙️</div>
+        <div class="flex-1">
+          <div class="flex justify-between items-center text-[10px] font-mono mb-1">
+            <span class="text-zinc-400 font-bold uppercase tracking-wider">Acoustic Airway Scanner</span>
+            <span id="audioClassLabel" class="text-emerald-400 font-bold">Normal Breathing (<span id="audioDbVal">32</span> dB)</span>
+          </div>
+          <div class="w-full bg-zinc-800 rounded-full h-2.5 overflow-hidden flex">
+            <div id="audioMeterBar" class="bg-gradient-to-r from-emerald-500 via-amber-400 to-red-500 h-full transition-all duration-75" style="width: 32%;"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAIL-SAFE STAGE DEMO TRIGGERS -->
+    <section class="bg-zinc-950 border border-zinc-800 rounded-xl p-3">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-black uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+          <span>⚡</span> Stage Demo Fail-Safe Triggers
+        </h2>
+        <span class="text-[10px] text-zinc-500 font-mono">1-Tap Override</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <button onclick="triggerEmergency('STROKE', 0.48)" class="p-2.5 bg-zinc-900 hover:bg-red-950/40 active:scale-95 border border-zinc-700 hover:border-red-500 rounded-lg text-left transition flex flex-col justify-between">
+          <div class="text-base mb-1">🧠</div>
+          <div class="font-bold text-xs text-white">Stroke</div>
+          <div class="text-[10px] text-zinc-400">Facial Droop &gt;0.42</div>
+        </button>
+
+        <button onclick="triggerEmergency('ANAPHYLAXIS', 0.12, 78, 'Inspiratory Stridor / Wheezing')" class="p-2.5 bg-zinc-900 hover:bg-amber-950/40 active:scale-95 border border-zinc-700 hover:border-amber-500 rounded-lg text-left transition flex flex-col justify-between">
+          <div class="text-base mb-1">🫁</div>
+          <div class="font-bold text-xs text-white">Anaphylaxis</div>
+          <div class="text-[10px] text-zinc-400">Airway Stridor &gt;75dB</div>
+        </button>
+
+        <button onclick="triggerEmergency('HEMORRHAGE', 0.05, 45)" class="p-2.5 bg-zinc-900 hover:bg-rose-950/40 active:scale-95 border border-zinc-700 hover:border-rose-500 rounded-lg text-left transition flex flex-col justify-between">
+          <div class="text-base mb-1">🩸</div>
+          <div class="font-bold text-xs text-white">Severe Hemorrhage</div>
+          <div class="text-[10px] text-zinc-400">Arterial Trauma</div>
+        </button>
+
+        <button onclick="triggerEmergency('BURN', 0.06, 52)" class="p-2.5 bg-zinc-900 hover:bg-orange-950/40 active:scale-95 border border-zinc-700 hover:border-orange-500 rounded-lg text-left transition flex flex-col justify-between">
+          <div class="text-base mb-1">🔥</div>
+          <div class="font-bold text-xs text-white">Severe Burn</div>
+          <div class="text-[10px] text-zinc-400">Thermal / Cyanosis</div>
+        </button>
+      </div>
+    </section>
+
+    <!-- ACTIVE EMERGENCY & PANIC-PROOF BYSTANDER FIRST AID GUIDANCE -->
+    <section id="activeEmergencySection" class="hidden bg-black border-2 border-amber-400 rounded-xl p-4 shadow-2xl">
+      <!-- High Contrast Header -->
+      <div class="border-b-2 border-amber-400/60 pb-3 mb-3">
+        <div class="flex items-center justify-between">
+          <span class="bg-red-600 text-white font-black text-xs px-2 py-0.5 rounded uppercase tracking-wider font-mono" id="activeEsiBadge">RED - IMMEDIATE (ESI-1)</span>
+          <span class="text-xs font-mono font-bold text-amber-300 flex items-center gap-1">
+            <span>⏱️ ETA:</span>
+            <span id="activeEtaTimer">05:20</span>
+          </span>
+        </div>
+        <h3 id="activeConditionTitle" class="text-xl font-black text-white mt-2 leading-tight">Acute Ischemic Stroke</h3>
+        <p class="text-xs text-amber-300 font-mono mt-0.5">Pre-Hospital Telemetry Transmitted to Trauma Bay 1</p>
+      </div>
+
+      <!-- Panic-Proof Numbered Instructions -->
+      <div class="space-y-2.5" id="bystanderStepsList">
+        <!-- Rendered dynamically -->
+      </div>
+
+      <!-- Voice Co-Pilot Control Bar -->
+      <div class="mt-4 pt-3 border-t border-zinc-800 flex items-center justify-between">
+        <button id="repeatVoiceBtn" class="px-3 py-2 bg-amber-400 hover:bg-amber-300 active:scale-95 text-black font-black text-xs rounded-lg flex items-center gap-1.5 transition">
+          <span>🔊</span> Repeat Voice Instructions
+        </button>
+        <button onclick="clearEmergency()" class="text-xs text-zinc-400 hover:text-zinc-200 underline">
+          Reset Triage
+        </button>
+      </div>
+    </section>
+
+    <!-- TELEMETRY SNAPSHOT TRANSMISSION STATUS -->
+    <section class="bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs space-y-2">
+      <div class="flex justify-between items-center text-zinc-400">
+        <span class="font-bold uppercase tracking-wider text-[10px]">Telemetry Dossier Status</span>
+        <span id="dossierStatusBadge" class="text-zinc-500 font-mono">STANDBY / MONITORING</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-[11px] font-mono text-zinc-400">
+        <div class="bg-zinc-900 p-2 rounded border border-zinc-800">
+          <div class="text-[9px] text-zinc-500 uppercase">GPS Location</div>
+          <div id="gpsCoordsText" class="text-zinc-200">37.7749° N, 122.4194° W</div>
+        </div>
+        <div class="bg-zinc-900 p-2 rounded border border-zinc-800">
+          <div class="text-[9px] text-zinc-500 uppercase">Last Packet ID</div>
+          <div id="packetIdText" class="text-zinc-200">PAT-READY</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- JAVASCRIPT CLINICAL ENGINE -->
+  <script>
+    // Global State
+    let ws = null;
+    let audioContext = null;
+    let analyser = null;
+    let micStream = null;
+    let isVoiceMuted = false;
+    let currentAsymmetry = 0.08;
+    let currentDecibels = 32;
+    let currentAudioStatus = "Normal Breathing";
+    let triggerTimer = null;
+    let asymmetryHighStartTime = null;
+    let activeEmergency = null;
+    let etaCountdownTimer = null;
+    let remainingEtaSeconds = 300;
+    let userLocation = { lat: 37.7749, lon: -122.4194 };
+
+    // DOM Elements
+    const videoEl = document.getElementById('webcam');
+    const canvasEl = document.getElementById('meshCanvas');
+    const ctx = canvasEl.getContext('2d');
+    const wsStatusDot = document.getElementById('wsStatusDot');
+    const wsStatusText = document.getElementById('wsStatusText');
+    const asymmetryValue = document.getElementById('asymmetryValue');
+    const asymmetryLight = document.getElementById('asymmetryLight');
+    const autoTriggerToggle = document.getElementById('autoTriggerToggle');
+    const leftDistVal = document.getElementById('leftDistVal');
+    const rightDistVal = document.getElementById('rightDistVal');
+    const audioMeterBar = document.getElementById('audioMeterBar');
+    const audioDbVal = document.getElementById('audioDbVal');
+    const audioClassLabel = document.getElementById('audioClassLabel');
+    const activeEmergencySection = document.getElementById('activeEmergencySection');
+    const activeConditionTitle = document.getElementById('activeConditionTitle');
+    const activeEsiBadge = document.getElementById('activeEsiBadge');
+    const activeEtaTimer = document.getElementById('activeEtaTimer');
+    const bystanderStepsList = document.getElementById('bystanderStepsList');
+    const hospitalReadyBanner = document.getElementById('hospitalReadyBanner');
+    const dossierStatusBadge = document.getElementById('dossierStatusBadge');
+    const packetIdText = document.getElementById('packetIdText');
+    const gpsCoordsText = document.getElementById('gpsCoordsText');
+    const voiceMuteBtn = document.getElementById('voiceMuteBtn');
+    const voiceMuteIcon = document.getElementById('voiceMuteIcon');
+    const voiceMuteLabel = document.getElementById('voiceMuteLabel');
+    const repeatVoiceBtn = document.getElementById('repeatVoiceBtn');
+    const startCamBtn = document.getElementById('startCamBtn');
+    const cameraFallbackNotice = document.getElementById('cameraFallbackNotice');
+
+    // 1. GPS Coordinates Geolocation
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          userLocation.lat = Number(pos.coords.latitude.toFixed(4));
+          userLocation.lon = Number(pos.coords.longitude.toFixed(4));
+          gpsCoordsText.textContent = `${userLocation.lat}° N, ${userLocation.lon}° W`;
+        },
+        err => console.log('Geolocation defaulted:', err.message),
+        { timeout: 5000 }
+      );
+    }
+
+    // 2. WebSocket Setup
+    function initWebSocket() {
+      const loc = window.location;
+      const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${loc.host}/ws/patient`;
+
+      try {
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          wsStatusDot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block';
+          wsStatusText.textContent = 'ED Trauma Link ACTIVE';
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'trauma_ready_confirmed') {
+              // ED trauma team confirmed ready
+              hospitalReadyBanner.classList.remove('hidden');
+              document.getElementById('hospitalReadyText').textContent = data.banner || 'METRO GENERAL ED: TRAUMA TEAM PREPARED & STANDING BY';
+              playTone(880, 0.15); // gentle confirmation beep
+            } else if (data.type === 'dispatch_ack') {
+              dossierStatusBadge.textContent = 'RECEIVED BY TRAUMA TEAM';
+              dossierStatusBadge.className = 'text-emerald-400 font-mono font-bold';
+              packetIdText.textContent = data.patientId;
+            } else if (data.type === 'emergency_cleared') {
+              clearEmergency(false);
+            }
+          } catch (e) {
+            console.error('WS Parse error:', e);
+          }
+        };
+
+        ws.onclose = () => {
+          wsStatusDot.className = 'w-1.5 h-1.5 rounded-full bg-red-500 inline-block';
+          wsStatusText.textContent = 'ED Link Reconnecting...';
+          setTimeout(initWebSocket, 2500);
+        };
+
+        ws.onerror = () => {
+          wsStatusDot.className = 'w-1.5 h-1.5 rounded-full bg-amber-500 inline-block';
+          wsStatusText.textContent = 'ED Link REST Mode';
+        };
+      } catch (err) {
+        console.warn('WebSocket init error, falling back to REST:', err);
+      }
+    }
+
+    initWebSocket();
+
+    // 3. Audio Airway Scanner (WebAudio API)
+    async function initAudio() {
+      try {
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
+        if (!micStream) {
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        }
+        const source = audioContext.createMediaStreamSource(micStream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+        function updateAudioMetrics() {
+          if (!analyser) return;
+          analyser.getByteFrequencyData(dataArray);
+
+          let sum = 0;
+          let highFreqSum = 0;
+          const half = Math.floor(dataArray.length / 2);
+
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+            if (i > half) highFreqSum += dataArray[i];
+          }
+
+          const avg = sum / dataArray.length;
+          // Scale average into 0-100 dB approximate range
+          currentDecibels = Math.min(100, Math.max(20, Math.round((avg / 255) * 100)));
+          audioDbVal.textContent = currentDecibels;
+          audioMeterBar.style.width = `${currentDecibels}%`;
+
+          // Acoustic classification
+          if (currentDecibels >= 72 || (currentDecibels >= 60 && highFreqSum > sum * 0.45)) {
+            currentAudioStatus = "Inspiratory Stridor / Wheezing";
+            audioClassLabel.textContent = `Inspiratory Stridor (${currentDecibels} dB)`;
+            audioClassLabel.className = 'text-red-400 font-bold';
+            audioMeterBar.className = 'bg-red-600 h-full transition-all duration-75';
+          } else if (currentDecibels >= 58) {
+            currentAudioStatus = "Tachypnea / Hyperventilation";
+            audioClassLabel.textContent = `Tachypnea (${currentDecibels} dB)`;
+            audioClassLabel.className = 'text-amber-400 font-bold';
+            audioMeterBar.className = 'bg-amber-500 h-full transition-all duration-75';
+          } else {
+            currentAudioStatus = "Normal Breathing";
+            audioClassLabel.textContent = `Normal Breathing (${currentDecibels} dB)`;
+            audioClassLabel.className = 'text-emerald-400 font-bold';
+            audioMeterBar.className = 'bg-gradient-to-r from-emerald-500 via-amber-400 to-red-500 h-full transition-all duration-75';
+          }
+
+          requestAnimationFrame(updateAudioMetrics);
+        }
+
+        updateAudioMetrics();
+      } catch (err) {
+        console.warn('Microphone access denied or error:', err);
+        // Start synthetic audio pulse for demo
+        simulateAudioBar();
+      }
+    }
+
+    function simulateAudioBar() {
+      setInterval(() => {
+        if (!analyser) {
+          const simulatedDb = 32 + Math.floor(Math.random() * 12);
+          currentDecibels = simulatedDb;
+          audioDbVal.textContent = simulatedDb;
+          audioMeterBar.style.width = `${simulatedDb}%`;
+        }
+      }, 300);
+    }
+
+    // 4. MediaPipe FaceMesh & Camera Stream
+    let camera = null;
+    let faceMesh = null;
+
+    async function initCamera() {
+      try {
+        cameraFallbackNotice.classList.add('hidden');
+        await initAudio();
+
+        faceMesh = new FaceMesh({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+
+        faceMesh.setOptions({
+          maxNumFaces: 1,
+          refineLandmarks: true,
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults(onFaceMeshResults);
+
+        camera = new Camera(videoEl, {
+          onFrame: async () => {
+            await faceMesh.send({ image: videoEl });
+          },
+          width: 640,
+          height: 480
+        });
+
+        await camera.start();
+      } catch (err) {
+        console.error('Camera initialization error:', err);
+        cameraFallbackNotice.innerHTML = `
+          <div class="text-amber-400 text-2xl mb-1">⚠️</div>
+          <p class="text-sm font-bold text-zinc-200">Camera / MediaPipe Fallback</p>
+          <p class="text-xs text-zinc-400 max-w-xs mb-2">Browser webcam stream restricted in this environment. Use the Stage Demo Triggers below for instant testing.</p>
+          <button onclick="simulateFaceDroop(0.46)" class="px-3 py-1.5 bg-red-600 rounded font-bold text-xs text-white">Simulate Facial Droop (0.46)</button>
+        `;
+        cameraFallbackNotice.classList.remove('hidden');
+        simulateCanvasFallback();
+      }
+    }
+
+    function onFaceMeshResults(results) {
+      canvasEl.width = videoEl.videoWidth || 640;
+      canvasEl.height = videoEl.videoHeight || 480;
+      ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+
+      if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+        return;
+      }
+
+      const landmarks = results.multiFaceLandmarks[0];
+      const w = canvasEl.width;
+      const h = canvasEl.height;
+
+      // Extract Landmark Points:
+      // Left eye corner (33) to Left mouth corner (61)
+      // Right eye corner (263) to Right mouth corner (291)
+      const p33 = landmarks[33];
+      const p61 = landmarks[61];
+      const p263 = landmarks[263];
+      const p291 = landmarks[291];
+
+      if (!p33 || !p61 || !p263 || !p291) return;
+
+      const leftDist = Math.hypot((p33.x - p61.x) * w, (p33.y - p61.y) * h);
+      const rightDist = Math.hypot((p263.x - p291.x) * w, (p263.y - p291.y) * h);
+
+      leftDistVal.textContent = Math.round(leftDist);
+      rightDistVal.textContent = Math.round(rightDist);
+
+      const maxDist = Math.max(leftDist, rightDist);
+      const asymmetry = maxDist > 0 ? Math.abs(leftDist - rightDist) / maxDist : 0;
+      currentAsymmetry = Number(asymmetry.toFixed(3));
+
+      const isAbnormal = currentAsymmetry >= 0.35;
+      const isCritical = currentAsymmetry >= 0.42;
+
+      // Draw Landmark Vectors
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = isAbnormal ? '#ef4444' : '#10b981';
+      ctx.beginPath();
+      ctx.moveTo(p33.x * w, p33.y * h);
+      ctx.lineTo(p61.x * w, p61.y * h);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(p263.x * w, p263.y * h);
+      ctx.lineTo(p291.x * w, p291.y * h);
+      ctx.stroke();
+
+      // Draw Key Nodes
+      [p33, p61, p263, p291].forEach(pt => {
+        ctx.fillStyle = isAbnormal ? '#ef4444' : '#10b981';
+        ctx.beginPath();
+        ctx.arc(pt.x * w, pt.y * h, isAbnormal ? 6 : 4, 0, 2 * Math.PI);
+        ctx.fill();
+      });
+
+      // Update HUD
+      updateAsymmetryHUD(currentAsymmetry);
+
+      // Auto-Trigger logic: if >= 0.42 for > 1.5s
+      if (autoTriggerToggle.checked && isCritical) {
+        if (!asymmetryHighStartTime) {
+          asymmetryHighStartTime = Date.now();
+        } else if (Date.now() - asymmetryHighStartTime > 1500 && !activeEmergency) {
+          triggerEmergency('STROKE', currentAsymmetry, currentDecibels, currentAudioStatus, true);
+        }
+      } else {
+        asymmetryHighStartTime = null;
+      }
+    }
+
+    function updateAsymmetryHUD(val) {
+      if (val >= 0.42) {
+        asymmetryValue.innerHTML = `${val.toFixed(2)} <span class="text-[10px] text-red-400 font-bold">(CRITICAL DROOP)</span>`;
+        asymmetryValue.className = 'text-sm font-black font-mono text-red-500 animate-pulse';
+        asymmetryLight.className = 'w-2.5 h-2.5 rounded-full bg-red-500 animate-ping';
+      } else if (val >= 0.35) {
+        asymmetryValue.innerHTML = `${val.toFixed(2)} <span class="text-[10px] text-amber-400 font-bold">(ASYMMETRIC)</span>`;
+        asymmetryValue.className = 'text-sm font-black font-mono text-amber-400';
+        asymmetryLight.className = 'w-2.5 h-2.5 rounded-full bg-amber-400';
+      } else {
+        asymmetryValue.innerHTML = `${val.toFixed(2)} <span class="text-[10px] text-zinc-400 font-normal">(NORMAL)</span>`;
+        asymmetryValue.className = 'text-sm font-black font-mono text-emerald-400';
+        asymmetryLight.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500';
+      }
+    }
+
+    function simulateCanvasFallback() {
+      canvasEl.width = 320;
+      canvasEl.height = 240;
+      let angle = 0;
+      function drawSimulatedFace() {
+        ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+        const cx = 160;
+        const cy = 120;
+        // Head outline
+        ctx.strokeStyle = '#3f3f46';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, 70, 95, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Facial landmarks points
+        const droopOffset = currentAsymmetry >= 0.4 ? 18 : 0;
+        const eyeY = cy - 25;
+        const mouthY = cy + 40;
+
+        ctx.strokeStyle = currentAsymmetry >= 0.35 ? '#ef4444' : '#10b981';
+        ctx.lineWidth = 3;
+
+        // Left vector
+        ctx.beginPath();
+        ctx.moveTo(cx - 35, eyeY);
+        ctx.lineTo(cx - 30, mouthY + droopOffset);
+        ctx.stroke();
+
+        // Right vector
+        ctx.beginPath();
+        ctx.moveTo(cx + 35, eyeY);
+        ctx.lineTo(cx + 30, mouthY);
+        ctx.stroke();
+
+        requestAnimationFrame(drawSimulatedFace);
+      }
+      drawSimulatedFace();
+    }
+
+    window.simulateFaceDroop = function(val) {
+      currentAsymmetry = val;
+      updateAsymmetryHUD(val);
+      if (val >= 0.42 && autoTriggerToggle.checked) {
+        setTimeout(() => {
+          triggerEmergency('STROKE', val);
+        }, 1200);
+      }
+    };
+
+    // 5. Emergency Trigger & Automated Telemetry Transmission
+    const PROTOCOL_LIBRARY = {
+      STROKE: {
+        name: "Acute Ischemic Stroke (LVO Suspected)",
+        esi: "RED - IMMEDIATE (ESI-1)",
+        eta: 320,
+        voice: "Stroke emergency confirmed. Sit the patient upright at forty-five degrees. Do not give any food, water, or aspirin. Keep the patient calm. Emergency dispatch is alerted and hospital trauma team is standing by.",
+        steps: [
+          "Sit patient upright at 30 to 45 degrees; do NOT give food, water, or aspirin.",
+          "Note the exact time symptoms began (critical for tPA or thrombectomy time window).",
+          "Loosen any tight clothing around neck; keep patient calm and completely still.",
+          "If patient becomes unresponsive or vomits, immediately roll gently onto their left side in Recovery Position."
+        ]
+      },
+      ANAPHYLAXIS: {
+        name: "Severe Systemic Anaphylaxis & Airway Compromise",
+        esi: "RED - IMMEDIATE (ESI-1)",
+        eta: 280,
+        voice: "Severe anaphylaxis detected. Administer epinephrine auto-injector immediately into the outer mid-thigh. Keep the patient flat with legs elevated. Airway trauma bay is prepped.",
+        steps: [
+          "Administer Epinephrine Auto-Injector (EpiPen) immediately into outer mid-thigh.",
+          "Keep patient lying flat with legs elevated unless breathing is severely labored.",
+          "Remove known allergen trigger; do NOT allow patient to stand or walk.",
+          "Prepare secondary epinephrine dose if no clinical improvement within 5 to 10 minutes."
+        ]
+      },
+      HEMORRHAGE: {
+        name: "Severe Arterial Hemorrhage / Exsanguinating Trauma",
+        esi: "RED - IMMEDIATE (ESI-1)",
+        eta: 240,
+        voice: "Severe arterial hemorrhage. Apply direct, firm, continuous pressure immediately with clean cloth. If limb bleeding continues, apply tourniquet two inches above wound. Blood bank massive transfusion is pre-activated.",
+        steps: [
+          "Apply direct, firm, continuous bilateral pressure over the bleeding site with sterile dressing.",
+          "If arterial limb bleeding does not stop, apply tourniquet 2 to 3 inches above wound (never over a joint).",
+          "Keep patient warm with jackets or blankets to prevent trauma-induced hypothermia and coagulopathy.",
+          "Do NOT remove original gauze even if soaked through; layer fresh gauze on top and maintain constant pressure."
+        ]
+      },
+      BURN: {
+        name: "Severe Inhalation Thermal Injury / Cyanosis",
+        esi: "RED - IMMEDIATE (ESI-1)",
+        eta: 350,
+        voice: "Severe burn and airway trauma. Remove patient from heat source. Cool burns with clean room-temperature water. Do not apply ice. Cover loosely with sterile cloth. Trauma team ready.",
+        steps: [
+          "Remove patient from fire or chemical source; ensure immediate airway patency.",
+          "Cool burn area with clean room-temperature water for 10 to 15 minutes (never use ice or greasy ointments).",
+          "Cover burn loosely with clean, non-adherent sterile dressing or plastic wrap.",
+          "Elevate burned extremities above heart level if possible and monitor respiratory status closely."
+        ]
+      }
+    };
+
+    function captureSnapshot() {
+      try {
+        const snapCanvas = document.createElement('canvas');
+        snapCanvas.width = 320;
+        snapCanvas.height = 180;
+        const sctx = snapCanvas.getContext('2d');
+        if (videoEl && videoEl.videoWidth > 0) {
+          sctx.drawImage(videoEl, 0, 0, 320, 180);
+        } else {
+          // Fallback graphic for snapshot
+          sctx.fillStyle = '#09090b';
+          sctx.fillRect(0, 0, 320, 180);
+          sctx.fillStyle = '#ef4444';
+          sctx.font = 'bold 14px monospace';
+          sctx.fillText('EMERGENCY TELEMETRY FRAME', 30, 90);
+        }
+        return snapCanvas.toDataURL('image/jpeg', 0.6);
+      } catch (e) {
+        return "";
+      }
+    }
+
+    window.triggerEmergency = function(conditionKey, asymmetryOverride, decibelOverride, audioClassOverride, autoTriggered = false) {
+      const pKey = conditionKey.toUpperCase();
+      const proto = PROTOCOL_LIBRARY[pKey] || PROTOCOL_LIBRARY.STROKE;
+
+      activeEmergency = pKey;
+      const asymmetryVal = asymmetryOverride !== undefined ? asymmetryOverride : currentAsymmetry;
+      const decibelVal = decibelOverride !== undefined ? decibelOverride : currentDecibels;
+      const audioClassVal = audioClassOverride || currentAudioStatus;
+      const snapshotBase64 = captureSnapshot();
+      const patientId = "PAT-" + Math.floor(10000 + Math.random() * 90000);
+
+      // Render Active Emergency UI
+      activeConditionTitle.textContent = proto.name;
+      activeEsiBadge.textContent = proto.esi;
+      remainingEtaSeconds = proto.eta;
+      activeEtaTimer.textContent = formatETA(remainingEtaSeconds);
+
+      // Render Bystander Steps
+      bystanderStepsList.innerHTML = proto.steps.map((step, idx) => `
+        <div class="flex items-start gap-3 bg-zinc-900/90 border border-amber-500/30 p-3 rounded-lg">
+          <div class="w-6 h-6 rounded-full bg-amber-400 text-black font-black text-xs flex items-center justify-center shrink-0">
+            ${idx + 1}
+          </div>
+          <div class="text-sm font-semibold text-zinc-100 leading-snug">
+            ${step}
+          </div>
+        </div>
+      `).join('');
+
+      activeEmergencySection.classList.remove('hidden');
+      dossierStatusBadge.textContent = 'TRANSMITTING DOSSIER...';
+      dossierStatusBadge.className = 'text-amber-400 font-mono font-bold animate-pulse';
+
+      // Start ETA Countdown
+      if (etaCountdownTimer) clearInterval(etaCountdownTimer);
+      etaCountdownTimer = setInterval(() => {
+        remainingEtaSeconds = Math.max(0, remainingEtaSeconds - 1);
+        activeEtaTimer.textContent = formatETA(remainingEtaSeconds);
+        if (remainingEtaSeconds === 0) clearInterval(etaCountdownTimer);
+      }, 1000);
+
+      // Voice Co-Pilot Speech
+      speakVoice(proto.voice);
+
+      // Construct Telemetry Packet
+      const packet = {
+        type: 'telemetry',
+        patientId: patientId,
+        condition: pKey,
+        asymmetry: asymmetryVal,
+        decibels: decibelVal,
+        audioClass: audioClassVal,
+        snapshot: snapshotBase64,
+        lat: userLocation.lat,
+        lon: userLocation.lon,
+        autoTriggered: autoTriggered,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Send via WebSocket or fallback REST
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(packet));
+        dossierStatusBadge.textContent = 'TRANSMITTED VIA WEBSOCKET';
+        dossierStatusBadge.className = 'text-emerald-400 font-mono font-bold';
+      } else {
+        // Fallback REST POST /api/dispatch
+        fetch('/api/dispatch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(packet)
+        }).then(r => r.json()).then(res => {
+          dossierStatusBadge.textContent = 'DISPATCHED VIA REST FALLBACK';
+          dossierStatusBadge.className = 'text-emerald-400 font-mono font-bold';
+        }).catch(err => {
+          console.warn('REST dispatch error:', err);
+        });
+      }
+
+      packetIdText.textContent = patientId;
+    };
+
+    window.clearEmergency = function(notifyWs = true) {
+      activeEmergency = null;
+      if (etaCountdownTimer) clearInterval(etaCountdownTimer);
+      activeEmergencySection.classList.add('hidden');
+      hospitalReadyBanner.classList.add('hidden');
+      dossierStatusBadge.textContent = 'STANDBY / MONITORING';
+      dossierStatusBadge.className = 'text-zinc-500 font-mono';
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+
+      if (notifyWs && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'reset_emergency' }));
+      }
+    };
+
+    function speakVoice(text) {
+      if (isVoiceMuted || !('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+      window.speechSynthesis.speak(utterance);
+    }
+
+    function formatETA(secs) {
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function playTone(freq, duration) {
+      try {
+        const actx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = actx.createOscillator();
+        const gain = actx.createGain();
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(actx.destination);
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + duration);
+        osc.stop(actx.currentTime + duration);
+      } catch (e) {}
+    }
+
+    // Voice UI Controls
+    voiceMuteBtn.addEventListener('click', () => {
+      isVoiceMuted = !isVoiceMuted;
+      voiceMuteIcon.textContent = isVoiceMuted ? '🔇' : '🔊';
+      voiceMuteLabel.textContent = isVoiceMuted ? 'Voice MUTED' : 'Voice ON';
+      voiceMuteBtn.className = isVoiceMuted 
+        ? 'px-2.5 py-1 text-xs font-bold rounded bg-red-950/80 text-red-300 border border-red-800'
+        : 'px-2.5 py-1 text-xs font-bold rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700';
+      if (isVoiceMuted && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    });
+
+    repeatVoiceBtn.addEventListener('click', () => {
+      if (activeEmergency && PROTOCOL_LIBRARY[activeEmergency]) {
+        speakVoice(PROTOCOL_LIBRARY[activeEmergency].voice);
+      }
+    });
+
+    startCamBtn.addEventListener('click', () => {
+      initCamera();
+    });
+
+    // Auto-attempt camera on page load
+    window.addEventListener('load', () => {
+      initCamera();
+    });
+  </script>
+</body>
+</html>
